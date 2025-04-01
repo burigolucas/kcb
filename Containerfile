@@ -29,6 +29,12 @@ RUN microdnf install jq util-linux httpd -y && \
     rm -rf /var/cache/yum
 
 WORKDIR /opt
+
+RUN adduser \
+    --no-create-home \
+    --system \
+    kcb
+
 ADD https://github.com/keycloak/keycloak/releases/download/${KC_RELEASE}/keycloak-${KC_RELEASE}.tar.gz .
 ADD https://github.com/keycloak/keycloak-benchmark/releases/download/${KCB_RELEASE}/keycloak-benchmark-${KCB_RELEASE}.tar.gz .
 RUN tar -zxf keycloak-${KC_RELEASE}.tar.gz && \
@@ -43,20 +49,20 @@ RUN tar -zxf keycloak-${KC_RELEASE}.tar.gz && \
 
 RUN sed -i 's/#ServerName.*/ServerName localhost:8080/' /etc/httpd/conf/httpd.conf && \
     sed -i 's/Listen 80/Listen 8080/' /etc/httpd/conf/httpd.conf && \
-    sed -i 's/User apache/User 185/' /etc/httpd/conf/httpd.conf && \
+    sed -i 's/User apache/User kcb/' /etc/httpd/conf/httpd.conf && \
     sed -i 's/Group apache/Group root/' /etc/httpd/conf/httpd.conf && \
-    chown -R 185:0 /var/log/httpd && \
+    chown -R kcb:0 /var/log/httpd && \
     chmod -R g=u /var/log/httpd && \
-    chown -R 185:0 /run/httpd && \
+    chown -R kcb:0 /run/httpd && \
     chmod -R g=u /run/httpd && \
-    chown -R 185:0 /etc/httpd && \
+    chown -R kcb:0 /etc/httpd && \
     chmod -R g=u /etc/httpd && \
     rm -rf /var/www/html && \
     ln -s ${KCB_RESULTS_PATH} /var/www/html && \
-    chown -R 185:0 /var/www/html && \
+    chown -R kcb:0 /var/www/html && \
     chmod -R g=u /var/www/html
 
-USER 185
+USER kcb
 COPY start_perf_test.sh .
 
 CMD ["bash", "start_perf_test.sh"]
