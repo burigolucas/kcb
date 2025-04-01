@@ -13,6 +13,7 @@ spec:
     contextDir: .
     git:
       uri: https://github.com/burigolucas/kcb.git
+      ref: openshift-registry
     type: Git
   strategy:
     dockerStrategy:
