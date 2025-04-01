@@ -37,21 +37,7 @@ PATH=$PATH:/opt/keycloak/bin:/opt/keycloak-benchmark/bin
 
 # Start apache server and update page periodically with links for results
 cd /opt/keycloak-benchmark/results
-while ((1))
-do
-  echo '<h1>Keycloak Performance Tests</h1>' > index.html.tmp; \
-  DATETIME=$(date); \
-  echo "<h2>Last updated on: $DATETIME</h2>" >> index.html.tmp; \
-  find . \
-    -mindepth 2 \
-    -name "index.html" \
-    -exec printf "<hr><a href = \"%s\">###%s###</a>\n</hr>" {} {} \; \
-    >> index.html.tmp; \
-  sed -i 's@###\./@@g' index.html.tmp; \
-  sed -i 's@/index\.html###@@g' index.html.tmp; \
-  mv index.html.tmp index.html; \
-  sleep 1; \
-done &
+source collect_results.sh
 /usr/sbin/httpd
 
 # Login to Keycloak
