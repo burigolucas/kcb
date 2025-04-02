@@ -1,0 +1,266 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: kcb
+  name: kcb
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kcb
+  template:
+    metadata:
+      labels:
+        app: kcb
+    spec:
+      serviceAccountName: kcb
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: tools
+        image: image-registry.openshift-image-registry.svc:5000/openshift/tools:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args:
+          - echo starting;
+            cd /shared;
+            echo "Initializing data for keycloak-benchmark" > /results/index.html
+
+            curl -LO https://github.com/keycloak/keycloak/releases/download/${KC_RELEASE}/keycloak-${KC_RELEASE}.tar.gz;
+            curl -LO https://github.com/keycloak/keycloak-benchmark/releases/download/${KCB_RELEASE}/keycloak-benchmark-${KCB_RELEASE}.tar.gz;
+            tar -zxf keycloak-${KC_RELEASE}.tar.gz;
+            tar -zxf keycloak-benchmark-${KCB_RELEASE}.tar.gz;
+            ln -f -s keycloak-${KC_RELEASE} keycloak;
+            ln -f -s keycloak-benchmark-${KCB_RELEASE} keycloak-benchmark;
+
+            mkdir -p /shared/bin;
+            
+            curl -L https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o /shared/bin/jq;
+            chmod +x /shared/bin/jq;
+            echo '#!/bin/sh' >/shared/bin/uuidgen;
+            echo 'cat /proc/sys/kernel/random/uuid' >>/shared/bin/uuidgen;
+            chmod +x /shared/bin/uuidgen;
+
+            GIT_SSH_COMMAND='ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /var/ssh-key/ssh-privatekey -o IdentitiesOnly=yes' git clone -b ${GIT_BRANCH} --single-branch git@${GIT_SERVER}:${GIT_REPO};
+            RSYNC_OPTIONS='-avzu --no-o --no-g --no-perms --omit-dir-times' bash /shared/kcb/collect_results.sh /shared/keycloak-benchmark/results/ /results/;
+
+            echo done;
+
+            trap 'trap - TERM; kill -s TERM -- -$$' TERM;
+            tail -f /dev/null & wait;
+            echo exiting;
+            exit 0;
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+          - name: shared-data
+            mountPath: /shared
+          - name: results-data
+            mountPath: /results
+          - name: ssh-key
+            mountPath: /var/ssh-key
+            readOnly: true
+            optional: false
+        env:
+        - name: KCB_RELEASE
+          value: "26.1-SNAPSHOT"
+        - name: KC_RELEASE
+          value: "26.1.4"
+        - name: GIT_SERVER
+          value: "github.com"
+        - name: GIT_REPO
+          value: "burigolucas/kcb"
+        - name: GIT_BRANCH
+          value: "openshift-registry"
+      - name: runtime
+        image: image-registry.openshift-image-registry.svc:5000/openshift/ubi8-openjdk-21-runtime:1.18
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/bash", "-c"]
+        args:
+          - echo starting;
+
+            PATH=$PATH:/shared/bin:/shared/keycloak/bin:/shared/keycloak-benchmark/bin;
+
+            until [ -f /shared/keycloak-benchmark/bin/kcb.sh ];
+            do
+              sleep 5;
+            done;
+
+            _=${KCB_USERS_PER_SEC:=1};
+            _=${KCB_USERS_PER_REALM:=1};
+            _=${KCB_MEASUREMENT:=30};
+            _=${KCB_SCENARIO:="keycloak.scenario.authentication.AuthorizationCode"};
+            _=${KCB_USER_THINK_TIME:="0"};
+            _=${KCB_REALM_NAME:="realm-0"};
+            _=${KCB_USE_INCREMENT:="false"};
+            _=${KCB_INCREMENT:="32"};
+            _=${KCB_RAMP_UP:="5"};
+            _=${KCB_WARM_UP:="0"};
+            _=${KCB_SLA_ERROR_PERCENTAGE:="0"};
+            _=${KCB_SLA_MEAN_RESPONSE_TIME:="300"};
+            _=${KCB_USE_ALL_LOCAL_ADDRESSES:="false"};
+            _=${KCB_FILTER_RESULTS:="false"};
+
+            prefix=KCB_;
+            typeset -p | awk '$3 ~ "^"pfx { print $3 }' pfx="$prefix";
+
+            if [[ -z "${KC_SERVER_URL}" ]]; then
+              echo "Environment variable 'KC_SERVER_URL' is not set";
+              exit 1;
+            fi
+
+            if [[ -z "${KC_ADMIN_USERNAME}" ]]; then
+              echo "Environment variable 'KC_ADMIN_USERNAME' is not set";
+              exit 1;
+            fi
+
+            if [[ -z "${KC_ADMIN_PASSWORD}" ]]; then
+              echo "Environment variable 'KC_ADMIN_PASSWORD' is not set";
+              exit 1;
+            fi
+
+            kcadm.sh config credentials \
+              --server ${KC_SERVER_URL} \
+              --realm master \
+              --user "${KC_ADMIN_USERNAME}" \
+              --password "${KC_ADMIN_PASSWORD}";
+
+            if [ "$KCB_USE_INCREMENT" = true ]; then
+              KCB_INCREMENT="--increment=$KCB_INCREMENT";
+            else
+              KCB_INCREMENT="";
+            fi
+
+            kcb.sh \
+                --server-url="${KC_SERVER_URL}" \
+                --realm-name="${KCB_REALM_NAME}" \
+                --users-per-realm=$KCB_USERS_PER_REALM \
+                --measurement=$KCB_MEASUREMENT \
+                --users-per-sec=$KCB_USERS_PER_SEC \
+                --scenario="${KCB_SCENARIO}" \
+                --user-think-time=$KCB_USER_THINK_TIME \
+                --sla-error-percentage=$KCB_SLA_ERROR_PERCENTAGE \
+                --sla-mean-response-time=${KCB_SLA_MEAN_RESPONSE_TIME} \
+                $KCB_INCREMENT \
+                --ramp-up=$KCB_RAMP_UP \
+                --warm-up=$KCB_WARM_UP \
+                --use-all-local-addresses=${KCB_USE_ALL_LOCAL_ADDRESSES} \
+                --filter-results=${KCB_FILTER_RESULTS};
+
+            trap 'trap - TERM; kill -s TERM -- -$$' TERM;
+            tail -f /dev/null & wait;
+            echo exiting;
+            exit 0;
+        resources:
+          limits:
+            cpu: 6
+            memory: 2Gi
+          requests:
+            cpu: 1
+            memory: 1Gi
+        volumeMounts:
+          - name: shared-data
+            mountPath: /shared
+        env:
+        - name: KC_SERVER_URL
+          value: "https://kc-sso.apps.bingo.openkube.de"
+        - name: KC_ADMIN_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: username
+        - name: KC_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keycloak-db-secret
+              key: password
+        - name: KCB_MEASUREMENT
+          value: "300"
+        - name: KCB_USERS_PER_SEC
+          value: "30"
+        - name: KCB_USERS_PER_REALM
+          value: "130"
+        - name: KCB_USE_INCREMENT
+          value: "false"
+        - name: KCB_INCREMENT
+          value: "--increment=10"
+        - name: KCB_RAMP_UP
+          value: "180"
+        - name: KCB_WARM_UP
+          value: "120"
+        - name: KCB_SLA_ERROR_PERCENTAGE
+          value: "0.001"
+        - name: KCB_SLA_MEAN_RESPONSE_TIME
+          value: "300"
+        - name: KCB_USE_ALL_LOCAL_ADDRESSES
+          value: "true"
+        # - name: KCB_FILTER_RESULTS
+        #   value: "true"
+        # - name: GRAPHITE_TCP_ADDR
+        #   value: "graphite-exporter.monitoring.svc"
+        # - name: GRAPHITE_TCP_PORT
+        #   value: "9109"
+
+      - name: web
+        image: image-registry.openshift-image-registry.svc:5000/openshift/httpd:2.4-ubi9
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+          name: http-8080
+        resources:
+          limits:
+            cpu: 200m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - name: results-data
+          mountPath: /var/www/html
+
+      - name: oauth-proxy
+        image: image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9443
+          protocol: TCP
+          name: http-9443
+        args:
+        - --https-address=:9443
+        - --provider=openshift
+        - --openshift-service-account=kcb
+        - --upstream=http://localhost:8080
+        - --tls-cert=/etc/tls/private/tls.crt
+        - --tls-key=/etc/tls/private/tls.key
+        - --cookie-secret=SECRET
+        volumeMounts:
+        - mountPath: /etc/tls/private
+          name: proxy-tls
+        resources:
+          limits:
+            cpu: 100m
+            memory: 1Gi
+          requests:
+            cpu: 10m
+            memory: 128Mi
+
+      volumes:
+      - name: shared-data
+        emptyDir: {}
+      - name: proxy-tls
+        secret:
+          secretName: kcb-proxy-tls
+      - name: results-data
+        persistentVolumeClaim:
+          claimName: storage-kcb
+      - name: ssh-key
+        secret:
+          secretName: git-repo-kcb
